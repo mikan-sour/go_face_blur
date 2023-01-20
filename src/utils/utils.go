@@ -17,10 +17,7 @@ func ReadImage(name string) (image.Image, error) {
 	}
 	defer fd.Close()
 
-	isJPEG, err := regexp.MatchString(".jpeg", name)
-	if err != nil {
-		return nil, err
-	}
+	isJPEG, _ := regexp.MatchString(".jpeg", name)
 
 	// image.Decode requires that you import the right image package. We've
 	// decode jpeg files then we would need to import "image/jpeg".

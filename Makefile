@@ -2,5 +2,5 @@
 run:
 	go run src/main.go
 clean:
-	rm -rf IMAGES/STEP_1/*
-	rm -rf IMAGES/STEP_2/*
+	rm -rf IMAGES/IMAGE_IN/*
+	rm -rf IMAGES/IMAGE_OUT/*

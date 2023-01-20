@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"gaussian-blur/src/utils"
 
@@ -21,8 +22,8 @@ const (
 	models     = "MODELS"
 	STEP_0     = "IMAGE_IN"
 	STEP_1     = "IMAGE_OUT"
-	RADIUS_MIN = 10.0
-	RADIUS_MAX = 35.0
+	RADIUS_MIN = 50.0
+	RADIUS_MAX = 100.0
 )
 
 var (
@@ -34,11 +35,13 @@ var (
 type FaceFinder interface {
 	FindFaces() (*os.File, string, error)
 	cropImage(img image.Image, crop image.Rectangle) (image.Image, error)
-	Tilize(img image.Image, rects []image.Rectangle) (*os.File, string, error)
+	Tilize(rects []image.Rectangle) (*os.File, string, error)
+	writeTile(image.Rectangle, *image.RGBA, *sync.WaitGroup, *sync.Mutex) error
 }
 
 type FaceFinderImpl struct {
 	imgPath string
+	img     image.Image
 }
 
 func New(imgPath string) FaceFinder {
@@ -63,7 +66,7 @@ func (f *FaceFinderImpl) FindFaces() (*os.File, string, error) {
 
 	fmt.Println("Number of Faces in Image: ", len(faces))
 
-	img, err := utils.ReadImage(imageInput)
+	f.img, err = utils.ReadImage(imageInput)
 	if err != nil {
 		return nil, "", err
 	}
@@ -73,7 +76,7 @@ func (f *FaceFinderImpl) FindFaces() (*os.File, string, error) {
 		rects = append(rects, face.Rectangle)
 	}
 
-	return f.Tilize(img, rects)
+	return f.Tilize(rects)
 
 }
 
@@ -83,8 +86,6 @@ func (f *FaceFinderImpl) cropImage(img image.Image, crop image.Rectangle) (image
 		SubImage(r image.Rectangle) image.Image
 	}
 
-	// method called SubImage. If it does, then we can use SubImage to crop the
-	// image.
 	simg, ok := img.(subImager)
 	if !ok {
 		return nil, fmt.Errorf("image does not support cropping")
@@ -93,42 +94,21 @@ func (f *FaceFinderImpl) cropImage(img image.Image, crop image.Rectangle) (image
 	return simg.SubImage(crop), nil
 }
 
-func (f *FaceFinderImpl) Tilize(img image.Image, rects []image.Rectangle) (*os.File, string, error) {
+func (f *FaceFinderImpl) Tilize(rects []image.Rectangle) (*os.File, string, error) {
 
-	b := img.Bounds()
+	b := f.img.Bounds()
 	outputImage := image.NewRGBA(b)
-	draw.Draw(outputImage, b, img, image.Point{}, draw.Src)
+	draw.Draw(outputImage, b, f.img, image.Point{}, draw.Src)
 
+	wg := &sync.WaitGroup{}
+	mutex := &sync.Mutex{}
+	wg.Add(len(rects))
 	for h := 0; h < len(rects); h++ {
-		rect := rects[h]
-		lengthOf := rect.Size().X
-		tiles := 144
-		rowLen := int(math.Sqrt(float64(tiles)))
-		tileDimension := int(math.Floor(float64(lengthOf) / float64(rowLen)))
-
-		var start_x, start_y int
-
-		for i := 0; i < rowLen; i++ {
-			start_x = rect.Min.X + (i * tileDimension)
-			for j := 0; j < rowLen; j++ {
-				start_y = rect.Min.Y + (j * tileDimension)
-
-				subT := subTile(start_x, start_y, tileDimension)
-
-				subTImage, err := f.cropImage(img, subT)
-				if err != nil {
-					return nil, "", fmt.Errorf("failed to crop: %s", err)
-				}
-
-				blurredSubTImage := blur.Box(subTImage, randomFloat())
-
-				draw.Draw(outputImage, subT, blurredSubTImage, subT.Min, draw.Over)
-
-			}
-		}
+		go f.writeTile(rects[h], outputImage, wg, mutex)
 	}
+	wg.Wait()
 
-	outputPath := fmt.Sprintf("%s/output.jpg", stepOneDir)
+	outputPath := fmt.Sprintf("%s/%s.jpg", stepOneDir, f.imgPath)
 
 	op, err := os.Create(outputPath)
 	if err != nil {
@@ -143,6 +123,38 @@ func (f *FaceFinderImpl) Tilize(img image.Image, rects []image.Rectangle) (*os.F
 
 	return op, outputPath, nil
 
+}
+
+func (f *FaceFinderImpl) writeTile(rect image.Rectangle, outputImage *image.RGBA, wg *sync.WaitGroup, mutex *sync.Mutex) error {
+	defer wg.Done()
+	lengthOf := rect.Size().X
+	tiles := 144
+	rowLen := int(math.Sqrt(float64(tiles)))
+	tileDimension := int(math.Floor(float64(lengthOf) / float64(rowLen)))
+
+	var start_x, start_y int
+
+	for i := 0; i < rowLen; i++ {
+		start_x = rect.Min.X + (i * tileDimension)
+		for j := 0; j < rowLen; j++ {
+			start_y = rect.Min.Y + (j * tileDimension)
+
+			subT := subTile(start_x, start_y, tileDimension)
+
+			subTImage, err := f.cropImage(f.img, subT)
+			if err != nil {
+				return fmt.Errorf("failed to crop: %s", err)
+			}
+
+			blurredSubTImage := blur.Box(subTImage, randomFloat())
+
+			mutex.Lock()
+			draw.Draw(outputImage, subT, blurredSubTImage, subT.Min, draw.Over)
+			mutex.Unlock()
+		}
+	}
+
+	return nil
 }
 
 func randomFloat() float64 {
